@@ -11,6 +11,9 @@
 #include <unistd.h>
 #include <errno.h>
 
+// 海康相机 SDK
+#include "MvCameraControl.h"
+
 using namespace std;
 using namespace cv;
 
@@ -96,17 +99,6 @@ private:
     const int SPIN_CONFIRM_FRAMES = 15;
     const float SPIN_ANGULAR_THRESHOLD = 30.0f;  // 角速度阈值(度/帧)
 
-    // 弹道在线标定
-    vector<float> pitch_errors;
-    vector<float> distance_samples;
-    vector<Point3f> history_positions;  // 历史位置(x, y, z)
-    const int MAX_ERROR_SAMPLES = 100;
-    const int MAX_HISTORY_POSITIONS = 50;
-    float bullet_speed_variance;
-    const float DEFAULT_BULLET_SPEED = 28.0f;
-    int sample_count;
-
-    // 自适应预测参数
     float adapt_factor;
     float dt;
 
@@ -116,12 +108,9 @@ public:
     bool is_spinning;
     bool use_adaptive_predict;
     float prediction_confidence;
-    float bullet_speed_estimate;
 
     ArmorKalmanFilter(float dt_ = 0.2f) : dt(dt_), has_last_pos(false),
                                           angular_velocity(0.0f), is_spinning(false), spin_frame_count(0),
-                                          bullet_speed_estimate(DEFAULT_BULLET_SPEED),
-                                          bullet_speed_variance(1.0f), sample_count(0),
                                           use_adaptive_predict(false), adapt_factor(0.5f), prediction_confidence(1.0f) {
         kf = KalmanFilter(4, 2, 0);
         kf.transitionMatrix = (Mat_<float>(4, 4) <<
@@ -145,14 +134,6 @@ public:
         setIdentity(kf.errorCovPost, Scalar::all(1));
         state = Mat::zeros(4, 1, CV_32F);
         measurement = Mat::zeros(2, 1, CV_32F);
-    }
-
-    float ballisticCompensation(float distance, float height, float bullet_speed) {
-        const float g = 9.8f;
-        float t = distance / bullet_speed;
-        float drop = 0.5f * g * t * t;
-        float target_y = height + drop;
-        return atan2(target_y, distance) * 180.0f / CV_PI;
     }
 
     // ===================== 延迟补偿预测 =====================
@@ -296,10 +277,11 @@ public:
 
     // ===================== 小陀螺检测 =====================
     bool detectSpinning(const Point2f& current_center) {
-        trajectory.push_back(current_center);
-        if (trajectory.size() > TRAJECTORY_LENGTH) {
+        // 优化：预先检查容量，避免频繁重新分配
+        if (trajectory.size() >= TRAJECTORY_LENGTH) {
             trajectory.erase(trajectory.begin());
         }
+        trajectory.push_back(current_center);
 
         if (trajectory.size() < TRAJECTORY_LENGTH / 2) {
             return is_spinning;
@@ -413,79 +395,6 @@ public:
         return combined_pred;
     }
 
-    // ===================== 弹道在线标定 =====================
-    void updateBallisticCalibration(float actual_distance, float measured_pitch, float measured_yaw,
-                                    const Point3f& position_3d) {
-        history_positions.push_back(position_3d);
-        if (history_positions.size() > MAX_HISTORY_POSITIONS) {
-            history_positions.erase(history_positions.begin());
-        }
-
-        // 计算理论弹道补偿
-        float theoretical_pitch = ballisticCompensation(actual_distance, position_3d.y, bullet_speed_estimate);
-        float pitch_error = theoretical_pitch - measured_pitch;
-
-        if (abs(pitch_error) < 5.0f) {  // 只在误差合理时更新
-            pitch_errors.push_back(pitch_error);
-            distance_samples.push_back(actual_distance);
-
-            if (pitch_errors.size() > MAX_ERROR_SAMPLES) {
-                pitch_errors.erase(pitch_errors.begin());
-                distance_samples.erase(distance_samples.begin());
-            }
-
-            // 更新弹道速度估计（基于误差反馈）
-            sample_count++;
-            float error_sum = 0.0f;
-            for (float e : pitch_errors) {
-                error_sum += e;
-            }
-            float avg_error = error_sum / pitch_errors.size();
-
-            // 自适应调整弹道速度
-            float speed_adjustment = avg_error * 0.1f;
-            bullet_speed_estimate += speed_adjustment;
-            bullet_speed_estimate = max(20.0f, min(35.0f, bullet_speed_estimate));  // 限制在合理范围
-
-            // 更新方差（用于置信度计算）
-            float variance_sum = 0.0f;
-            for (float e : pitch_errors) {
-                variance_sum += (e - avg_error) * (e - avg_error);
-            }
-            bullet_speed_variance = variance_sum / pitch_errors.size();
-        }
-    }
-
-    float getAdaptivePitch(float distance, float height, float current_yaw) {
-        // 根据历史数据自适应调整pitch
-        float base_pitch = ballisticCompensation(distance, height, bullet_speed_estimate);
-
-        // 添加距离相关的补偿
-        float dist_compensation = 0.0f;
-        if (distance_samples.size() >= 10) {
-            float dist_sum = 0.0f;
-            for (float d : distance_samples) {
-                dist_sum += d;
-            }
-            float avg_distance = dist_sum / distance_samples.size();
-            float dist_diff = distance - avg_distance;
-            dist_compensation = dist_diff * 0.5f;  // 距离差异补偿
-        }
-
-        // 添加旋转状态补偿
-        float spin_compensation = 0.0f;
-        if (is_spinning) {
-            spin_compensation = angular_velocity * 0.1f * prediction_confidence;
-        }
-
-        return base_pitch + dist_compensation + spin_compensation;
-    }
-
-    float getConfidence() const {
-        if (pitch_errors.size() < 10) return 0.5f;
-        return max(0.1f, min(1.0f, 1.0f - sqrt(bullet_speed_variance) / 3.0f));
-    }
-
     void reset() {
         has_last_pos = false;
         state = Mat::zeros(4, 1, CV_32F);
@@ -494,13 +403,8 @@ public:
         is_spinning = false;
         spin_frame_count = 0;
         angular_velocity = 0.0f;
-        pitch_errors.clear();
-        distance_samples.clear();
-        history_positions.clear();
-        sample_count = 0;
         use_adaptive_predict = false;
         prediction_confidence = 1.0f;
-        bullet_speed_estimate = DEFAULT_BULLET_SPEED;
     }
 };
 
@@ -544,19 +448,86 @@ int main()
     int valid_detection_count = 0;  // 连续有效检测帧数
     const int MIN_VALID_FRAMES_FOR_TRACKING = 5;  // 最小连续检测帧数
 
-    VideoCapture video(2);
-    if (!video.isOpened()) {
-        cout << "摄像头打开失败！请检查外接摄像头是否连接" << endl;
+    // ===================== 海康相机初始化 =====================
+    unsigned int nTLayerType = MV_GIGE_DEVICE | MV_USB_DEVICE;
+    MV_CC_DEVICE_INFO_LIST stDeviceList;
+    memset(&stDeviceList, 0, sizeof(MV_CC_DEVICE_INFO_LIST));
+
+    // 枚举设备
+    int nRet = MV_CC_EnumDevices(nTLayerType, &stDeviceList);
+    if (nRet != MV_OK || stDeviceList.nDeviceNum == 0) {
+        cout << "未找到海康相机！" << endl;
         return -1;
     }
 
-    // 设置相机参数
-    video.set(CAP_PROP_BUFFERSIZE, 20);  // 设置缓冲区为20帧
-    video.set(CAP_PROP_FPS, 30);         // 设置帧率
+    cout << "找到 " << stDeviceList.nDeviceNum << " 个相机设备" << endl;
 
-    // 降低曝光以减少白色背景和噪点
-    video.set(CAP_PROP_AUTO_EXPOSURE, 0.25);  // 关闭自动曝光
-    video.set(CAP_PROP_EXPOSURE, 3);         // 设置曝光时间（数值越小曝光越低）
+    // 选择第一个设备
+    int nIndex = 0;
+    MV_CC_DEVICE_INFO* pDeviceInfo = stDeviceList.pDeviceInfo[nIndex];
+
+    // 创建句柄
+    void* handle = NULL;
+    nRet = MV_CC_CreateHandle(&handle, pDeviceInfo);
+    if (nRet != MV_OK) {
+        cout << "创建相机句柄失败！" << endl;
+        return -1;
+    }
+
+    // 打开设备
+    nRet = MV_CC_OpenDevice(handle);
+    if (nRet != MV_OK) {
+        cout << "打开相机失败！" << endl;
+        MV_CC_DestroyHandle(handle);
+        return -1;
+    }
+
+    cout << "相机打开成功！" << endl;
+
+    // 设置触发模式为关闭
+    MV_CC_SetEnumValue(handle, "TriggerMode", MV_TRIGGER_MODE_OFF);
+
+    // 设置像素格式为 RGB8（彩色）
+    MV_CC_SetEnumValue(handle, "PixelFormat", PixelType_Gvsp_RGB8_Packed);
+
+    // 设置曝光时间
+    MV_CC_SetFloatValue(handle, "ExposureTime", 3000.0);
+
+    // 设置增益
+    MV_CC_SetFloatValue(handle, "Gain", 0.0);
+
+    // 读取并设置为相机最大帧率
+    MVCC_FLOATVALUE stFloatValue;
+    float max_frame_rate = 30.0f;  // 默认值
+
+    // 读取帧率范围
+    nRet = MV_CC_GetFloatValue(handle, "AcquisitionFrameRate", &stFloatValue);
+    if (nRet == MV_OK) {
+        max_frame_rate = stFloatValue.fMax;  // 获取最大帧率
+        cout << "相机最大帧率: " << fixed << setprecision(1) << max_frame_rate << " fps" << endl;
+
+        // 设置为最大帧率
+        nRet = MV_CC_SetFloatValue(handle, "AcquisitionFrameRate", max_frame_rate);
+        if (nRet == MV_OK) {
+            cout << "已设置为最大帧率: " << fixed << setprecision(1) << max_frame_rate << " fps" << endl;
+        } else {
+            cout << "设置帧率失败！错误码: 0x" << hex << nRet << endl;
+        }
+    } else {
+        cout << "无法读取帧率范围，使用默认 30fps" << endl;
+        MV_CC_SetFloatValue(handle, "AcquisitionFrameRate", 30.0);
+    }
+
+    // 开始取流
+    nRet = MV_CC_StartGrabbing(handle);
+    if (nRet != MV_OK) {
+        cout << "开始取流失败！" << endl;
+        MV_CC_CloseDevice(handle);
+        MV_CC_DestroyHandle(handle);
+        return -1;
+    }
+
+    cout << "相机取流已启动！" << endl;
 
     // ===================== 初始化串口 =====================
     int fd = open("/dev/ttyUSB0", O_RDWR | O_NOCTTY | O_NDELAY);//串口路径
@@ -587,15 +558,40 @@ int main()
     vector<vector<Point>> contours;
     vector<Vec4i> hierarchy;
 
+    // 优化：预分配轮廓和层级容器容量，减少动态分配
+    contours.reserve(500);
+    hierarchy.reserve(500);
+
+    MV_FRAME_OUT_INFO_EX stImageInfo = {0};
+    // 优化：根据实际分辨率调整缓冲区（1920×1080×3 ≈ 6MB）
+    // 使用更保守的初始分配，根据实际图像大小动态调整
+    unsigned int nDataSize = 1280 * 720 * 3;  // 减小初始分配
+    unsigned char* pData = (unsigned char*)malloc(nDataSize);
+
     for (;;) {
-        // 释放相机缓存，只取最新帧
-        for (int i = 0; i < 2; i++) {
-            Mat temp;
-            video >> temp;
+        // 优化：减少memset调用，只在必要时清零结构体
+        nRet = MV_CC_GetOneFrameTimeout(handle, pData, nDataSize, &stImageInfo, 1000);
+        if (nRet != MV_OK) {
+            // 如果是缓冲区不足错误，尝试扩大缓冲区
+            if (nRet == MV_E_NODATA || stImageInfo.nFrameLen > nDataSize) {
+                if (stImageInfo.nFrameLen > nDataSize) {
+                    cout << "[缓冲区] 重新分配: " << nDataSize << " -> " << stImageInfo.nFrameLen << endl;
+                    free(pData);
+                    nDataSize = stImageInfo.nFrameLen * 2;
+                    pData = (unsigned char*)malloc(nDataSize);
+                    continue;
+                }
+            }
+            cout << "获取图像超时！错误码: 0x" << hex << nRet << endl;
+            continue;
         }
 
-        video >> frame;
-        if (frame.empty()) break;
+        // 转换为 OpenCV Mat（RGB格式）
+        Mat rgb(stImageInfo.nHeight, stImageInfo.nWidth, CV_8UC3, pData);
+        Mat frame;
+        cvtColor(rgb, frame, COLOR_RGB2BGR);  // 转换为BGR格式供OpenCV显示
+
+        if (frame.empty()) continue;
         Mat frame_copy = frame.clone();
         bool is_armor_detected = false;
         Point2f detect_center;
@@ -604,14 +600,13 @@ int main()
         Mat gray;
         cvtColor(frame, gray, COLOR_BGR2GRAY);
 
-        // 固定阈值二值化（160-255）
-        Mat binary;
-        threshold(gray, binary, 160, 255, THRESH_BINARY);
+        // 降低阈值以识别红色灯条（80-255）
+        threshold(gray, binary, 120, 255, THRESH_BINARY);
 
         // 输出阈值信息（每30帧输出一次）
         static int frame_count = 0;
         if (++frame_count % 30 == 0) {
-            cout << "[预处理] 使用固定阈值二值化: 160-255" << endl;
+            cout << "[预处理] 使用固定阈值二值化: 120-255" << endl;
         }
 
         // 高斯模糊
@@ -626,15 +621,29 @@ int main()
         dilate(binary, dilatee, element_small, Point(-1, -1), 2);
         dilate(dilatee, dilatee, element_medium, Point(-1, -1), 1);
 
+        // 优化：清空轮廓容器，而非重新分配
+        contours.clear();
+        hierarchy.clear();
+
         findContours(dilatee, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
+        // 优化：预分配lightInfos容量
         vector<LightDescriptor> lightInfos;
+        lightInfos.reserve(contours.size() / 4);  // 估计约1/4的轮廓是有效灯条
+
         for (int i = 0; i < contours.size(); i++) {
             double area = contourArea(contours[i]);
             if (area < 80 || contours[i].size() <= 10) continue;
 
             RotatedRect Light_Rec = fitEllipse(contours[i]);
-            if (Light_Rec.size.width / Light_Rec.size.height > 5) continue;
-            if (Light_Rec.size.area() < 60) continue;
+
+            // 计算长宽比（长边/短边）
+            float aspect_ratio = max(Light_Rec.size.width, Light_Rec.size.height) /
+                                 min(Light_Rec.size.width, Light_Rec.size.height);
+            // 针对中距离优化：长宽比 < 1.8 或 > 8 的轮廓
+            if (aspect_ratio < 3 || aspect_ratio > 8) continue;
+
+            // 针对中距离优化：面积过滤更宽松
+            if (Light_Rec.size.area() < 50) continue;
 
             lightInfos.push_back(LightDescriptor(Light_Rec));
         }
@@ -644,6 +653,15 @@ int main()
         Point2f bestArmorCenter;
         float bestArmorScore = -1;
         int bestLightI = -1, bestLightJ = -1;
+
+        // 优化：定期清理未使用的内存（每30帧一次）
+        static int memory_cleanup_count = 0;
+        if (++memory_cleanup_count >= 30) {
+            memory_cleanup_count = 0;
+            contours.shrink_to_fit();
+            hierarchy.shrink_to_fit();
+            lightInfos.shrink_to_fit();
+        }
 
         for (size_t i = 0; i < lightInfos.size(); i++) {
             for (size_t j = i + 1; j < lightInfos.size(); j++) {
@@ -672,23 +690,28 @@ int main()
                 bool use_tracking_bonus = (valid_detection_count >= MIN_VALID_FRAMES_FOR_TRACKING) &&
                                          (last_valid_spacing > 0);
 
-                if (estimated_distance > 1800.0f) {
-                    // 远距离(>1.8m)
-                    max_spacing_error = use_tracking_bonus ? 0.50 : 0.35;  // 有跟踪时放宽到50%
+                // 针对主要识别距离 2.2m 优化
+                if (estimated_distance > 2500.0f) {
+                    // 远距离(>2.5m)
+                    max_spacing_error = use_tracking_bonus ? 0.80 : 0.65;
+                } else if (estimated_distance > 1800.0f) {
+                    // 中远距离(1.8-2.5m) - 主要识别范围
+                    max_spacing_error = use_tracking_bonus ? 0.90 : 0.75;
                 } else if (estimated_distance > 1200.0f) {
                     // 中距离(1.2-1.8m)
-                    max_spacing_error = use_tracking_bonus ? 0.60 : 0.45;  // 有跟踪时放宽到60%
+                    max_spacing_error = use_tracking_bonus ? 1.00 : 0.85;
                 } else {
                     // 近距离(≤1.2m)
-                    max_spacing_error = use_tracking_bonus ? 0.70 : 0.55;  // 有跟踪时放宽到70%
+                    max_spacing_error = use_tracking_bonus ? 1.10 : 0.95;
                 }
 
                 // 关键过滤：灯条间距必须符合物理约束
                 if (spacing_error_ratio > max_spacing_error) continue;
 
-                if (angleGap_ > 20 || LenGap_ratio > 1.2 || lengap_ratio > 1.0 ||
-                    yGap_ratio > 2.0 || xGap_ratio > 3.0 || xGap_ratio < 0.6 ||
-                    ratio > 4 || ratio < 0.6) continue;
+                // 放宽几何特征约束，提高识别稳定性
+                if (angleGap_ > 40 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||
+                    yGap_ratio > 3.0 || xGap_ratio > 4.0 || xGap_ratio < 0.5 ||
+                    ratio > 4 || ratio < 1.2) continue;
 
                 float score = 0;
                 score += (20 - angleGap_) / 20 * 25;  // 扩大角度容忍范围
@@ -774,13 +797,6 @@ int main()
                 float z = tvec.at<double>(2) / 1000.0f;
                 float distance_real = sqrt(x*x + z*z);
 
-                // 使用自适应弹道补偿
-                Point3f position_3d(x, y, z);
-                float pitch_comp = armor_kalman.getAdaptivePitch(distance_real, y, yaw);
-
-                // 更新弹道在线标定
-                armor_kalman.updateBallisticCalibration(distance_real, pitch_comp, yaw, position_3d);
-
                 // ===================== 卡尔曼更新（先预测，后更新） =====================
                 lost_frame_count = 0;
                 if (!is_kalman_init) {
@@ -840,7 +856,7 @@ int main()
                     // 只有稳定帧或卡尔曼置信度高时才发送
                     if (stable_frame_count >= MIN_STABLE_FRAMES || armor_kalman.prediction_confidence > 0.7f) {
                         send_data.yaw = delay_compensated_pose.y;      // 使用延迟补偿后的yaw
-                        send_data.pitch = pitch_comp + delay_compensated_pose.x * 0.3f;  // 考虑延迟补偿的pitch调整
+                        send_data.pitch = pitch + delay_compensated_pose.x * 0.3f;  // 考虑延迟补偿的pitch调整
                         send_data.distance = distance_real;
                         send_data.shoot = (lost_frame_count == 0 && armor_kalman.prediction_confidence > 0.6f) ? 1 : 0;  // 高置信度才射击
                         send_data.checksum = checkSum((uint8_t*)&send_data, sizeof(send_data)-1);
@@ -872,8 +888,6 @@ int main()
                 cout << "旋转状态: " << (armor_kalman.is_spinning ? "是" : "否") << endl;
                 cout << "预测模式: " << (armor_kalman.use_adaptive_predict ? "自适应" : "标准") << endl;
                 cout << "预测置信度: " << fixed << setprecision(2) << armor_kalman.prediction_confidence << endl;
-                cout << "弹道速度: " << fixed << setprecision(2) << armor_kalman.bullet_speed_estimate << " m/s" << endl;
-                cout << "标定置信度: " << fixed << setprecision(2) << armor_kalman.getConfidence() << endl;
                 cout << "========================================" << endl;
 
                 string distText = "Dist: " + to_string(static_cast<int>(distance_m * 10) / 10.0f) + "m";
@@ -926,18 +940,34 @@ int main()
                 string spinText = "SPIN: " + to_string(static_cast<int>(armor_kalman.angular_velocity));
                 putText(frame_copy, spinText, kalman_center + Point2f(10, 20), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 255), 1);
             }
-
-            // 标定信息显示
-            string calibText = "V: " + to_string(static_cast<int>(armor_kalman.bullet_speed_estimate));
-            putText(frame_copy, calibText, kalman_center + Point2f(10, 35), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 0), 1);
         }
 
         imshow("binary", binary);
         imshow("video", frame_copy);
-        if (waitKey(50) == 27) break;
+        if (waitKey(1) == 27) break;
     }
 
-    video.release();
+    // 停止取流
+    MV_CC_StopGrabbing(handle);
+
+    // 关闭设备
+    MV_CC_CloseDevice(handle);
+
+    // 销毁句柄
+    MV_CC_DestroyHandle(handle);
+
+    // 释放图像缓冲区
+    if (pData != NULL) {
+        free(pData);
+        pData = NULL;
+    }
+
+    // 最终清理：释放所有容器预留的内存
+    contours.clear();
+    contours.shrink_to_fit();
+    hierarchy.clear();
+    hierarchy.shrink_to_fit();
+
     if (fd != -1) close(fd);
     cv::destroyAllWindows();
     return 0;
