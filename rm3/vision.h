@@ -80,7 +80,7 @@ public:
             float aspect_ratio = max(Light_Rec.size.width, Light_Rec.size.height) /
                                  min(Light_Rec.size.width, Light_Rec.size.height);
             // 针对中距离优化：长宽比 < 1.8 或 > 8 的轮廓
-            if (aspect_ratio < 3 || aspect_ratio > 8) continue;
+            if (aspect_ratio < 2.5 || aspect_ratio > 6.5) continue;
 
             // 针对中距离优化：面积过滤更宽松
             if (Light_Rec.size.area() < 50) continue;
@@ -156,40 +156,106 @@ public:
                 // 关键过滤：灯条间距必须符合物理约束
                 if (spacing_error_ratio > max_spacing_error) continue;
 
+                // ===================== 评分系统总览 =====================
+                //
+                // 【评分项目及权重】
+                // ┌─────────────────────────────────────────────────────────────────────────┐
+                // │ 评分项                  │ 分数范围 │ 说明                                │
+                // ├─────────────────────────────────────────────────────────────────────────┤
+                // │ 1. 角度差评分          │ 0-25     │ 两灯条角度差，0°满分               │
+                // │ 2. 长度一致性评分      │ 0-25     │ 两灯条长度一致性                    │
+                // │ 3. 间距/长度比评分     │ 0-25     │ 灯条排列密度，1.5满分【距离评分1】  │
+                // │ 4. Y轴间距评分         │ 0-25     │ Y轴对齐程度                         │
+                // │ 5. 间距稳定性评分      │ 0-20     │ 与上一帧间距一致性【距离评分2】      │
+                // │ 6. 距离稳定性评分      │ 0-10     │ 估算距离稳定性【距离评分3】        │
+                // │ 7. 位置距离评分        │ 0-25/15  │ 与预测位置距离【距离评分4】        │
+                // ├─────────────────────────────────────────────────────────────────────────┤
+                // │ 总分（无跟踪）         │ 0-100    │ 1+2+3+4+7(15分)                    │
+                // │ 总分（有跟踪）         │ 0-130    │ 1+2+3+4+5+6+7(25分)                │
+                // └─────────────────────────────────────────────────────────────────────────┘
+                //
+                // 【调整评分权重的建议】
+                // - 提高距离评分权重：增大评分5、6、7的分数系数
+                // - 降低其他评分权重：减小评分1、2、3、4的分数系数
+                // - 例如：将评分5从20改为30，评分7从25改为35
+                //
+                // 【距离相关评分】
+                // - 评分3：ratio = dis/meanLen，反映灯条排列密度
+                // - 评分5：spacing_change = |dis - last_valid_spacing| / last_valid_spacing
+                // - 评分6：distance_change = |estimated_dist - last_valid_distance| / last_valid_distance
+                // - 评分7：distToKalman = 装甲板中心到预测位置的距离
+                //
                 // 放宽几何特征约束，提高识别稳定性
-                if (angleGap_ > 40 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||
+                if (angleGap_ > 30 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||
                     yGap_ratio > 3.0 || xGap_ratio > 4.0 || xGap_ratio < 0.5 ||
-                    ratio > 4 || ratio < 1.2) continue;
+                    ratio > 3.5 || ratio < 1.5) continue;
 
+                // ===================== 评分系统 =====================
+                // 总分范围：0-130分（有跟踪时）或 0-100分（无跟踪时）
                 float score = 0;
+
+                // 【评分1】角度差评分：0-25分
+                // 角度差越小得分越高，0°时满分25分，40°时0分
+                // 权重系数：25分
                 score += (20 - angleGap_) / 20 * 25;  // 扩大角度容忍范围
+
+                // 【评分2】长度一致性评分：0-25分
+                // 两灯条长度完全一致时满分25分，长度差为meanLen时0分
+                // 权重系数：25分
                 score += (1 - lengap_ratio) * 25;
+
+                // 【评分3】间距/长度比评分：0-25分（距离评分1）
+                // ratio=1.5时满分25分（理想值），ratio=0或3时0分
+                // 权重系数：25分
+                // ratio反映了灯条排列密度，1.25为物理理论值（100mm间距/80mm长度）
                 score += (1 - abs(ratio - 1.5)) * 25;
+
+                // 【评分4】Y轴间距评分：0-25分
+                // Y轴间距为0时满分25分，间距为2*meanLen时0分
+                // 权重系数：25分
                 score += (2.0 - yGap_ratio) / 2.0 * 25;  // 扩大Y轴差距容忍范围
 
-                // 连续性跟踪：间距和距离的稳定性权重
+                // ===================== 连续性跟踪加分 =====================
+                // 仅当有效帧数 >= 5 且有上一次有效间距时启用
                 if (use_tracking_bonus && last_valid_spacing > 0) {
                     float spacing_change = abs(dis - last_valid_spacing) / last_valid_spacing;
                     float distance_change = abs(estimated_dist - last_valid_distance) / last_valid_distance;
+
+                    // 【评分5】间距稳定性评分：0-20分（距离评分2）
+                    // 与上一帧间距完全一致时满分20分，间距变化100%时0分
+                    // 权重系数：20分
                     score += max(0.0f, 1.0f - spacing_change) * 20;  // 间距稳定性
+
+                    // 【评分6】距离稳定性评分：0-10分（距离评分3）
+                    // 与上一帧距离完全一致时满分10分，距离变化100%时0分
+                    // 权重系数：10分
                     score += max(0.0f, 1.0f - distance_change) * 10;  // 距离稳定性
                 }
 
+                // ===================== 位置距离评分 =====================
                 // 添加上一帧位置权重，根据连续性调整权重
-                float position_weight = use_tracking_bonus ? 25 : 15;  // 有跟踪时增加权重
-                float position_range = use_tracking_bonus ? 200 : 150;  // 有跟踪时扩大范围
+                float position_weight = use_tracking_bonus ? 25 : 15;  // 有跟踪时增加权重：15-25分
+                float position_range = use_tracking_bonus ? 200 : 150;  // 有跟踪时扩大范围：150-200px
 
                 if (is_kalman_init && kalman_center.x > 0) {
                     Point2f armorC = Point2f((leftLight.center.x + rightLight.center.x) / 2,
                                            (leftLight.center.y + rightLight.center.y) / 2);
                     float distToKalman = sqrt(pow(armorC.x - kalman_center.x, 2) +
                                             pow(armorC.y - kalman_center.y, 2));
+
+                    // 【评分7】卡尔曼预测位置距离评分：0-25分（有跟踪）或 0-15分（无跟踪）（距离评分4）
+                    // 距离卡尔曼预测位置0px时满分，距离=position_range时0分
+                    // 权重系数：position_weight（15-25分）
                     score += max(0.0f, position_range - distToKalman) / position_range * position_weight;
                 } else if (last_armor_center.x > 0) {
                     Point2f armorC = Point2f((leftLight.center.x + rightLight.center.x) / 2,
                                            (leftLight.center.y + rightLight.center.y) / 2);
                     float distToLast = sqrt(pow(armorC.x - last_armor_center.x, 2) +
                                            pow(armorC.y - last_armor_center.y, 2));
+
+                    // 【评分7替代】上一帧位置距离评分：0-25分（有跟踪）或 0-15分（无跟踪）（距离评分4）
+                    // 距离上一帧位置0px时满分，距离=position_range时0分
+                    // 权重系数：position_weight（15-25分）
                     score += max(0.0f, position_range - distToLast) / position_range * position_weight;
                 }
 
