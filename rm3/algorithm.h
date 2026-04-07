@@ -87,7 +87,7 @@ public:
     bool use_adaptive_predict;//是否启用自适应预测
     float prediction_confidence;//预测置信度因子
 
-    ArmorKalmanFilter(float dt_ = 0.1f) : dt(dt_), has_last_pos(false),//初始化，dt为时间间隔
+    ArmorKalmanFilter(float dt_ = 0.022f) : dt(dt_), has_last_pos(false),//初始化，dt为时间间隔
                                           angular_velocity(0.0f), is_spinning(false), spin_frame_count(0),
                                           use_adaptive_predict(false), adapt_factor(0.5f), prediction_confidence(1.0f) {
         kf = KalmanFilter(4, 2, 0);//初始化
@@ -101,11 +101,10 @@ public:
             0, 1, 0, 0);//y
         // 激进预测：增大过程噪声，允许更大的速度变化
         kf.processNoiseCov = (Mat_<float>(4, 4) <<////过程噪声协方差
-            1, 0, 0, 0,//x   越大比重越大，越不相信预测，越小越相信预测
-            0.5, 0, 0, 0,//位置噪声
-            0, 0.5, 0, 0,
-            0, 0, 5.0, 0,  // 增大速度噪声
-            0, 0, 0, 5.0);  // 增大速度噪声
+            0.5, 0, 0, 0,  // x位置噪声
+            0, 0.5, 0, 0,  // y位置噪声
+            0, 0, 5.0, 0,  // vx速度噪声
+            0, 0, 0, 5.0); // vy速度噪声
         // 减小测量噪声，更多相信预测而非测量
         kf.measurementNoiseCov = (Mat_<float>(2, 2) <<//测量噪声协方差
             0.05, 0,
@@ -349,8 +348,8 @@ Point2f update(const Point2f& detect_center) {
         for (const auto& p : trajectory) {
             float dx = p.x - trajectory_center.x;//相对x坐标
             float dy = p.y - trajectory_center.y;//y
-            float radius = sqrt(dx*dx + dy*dy);半径
-            float angle = atan2(dy, dx);//角度
+            float radius = sqrt(dx*dx + dy*dy);
+            float angle = atan2(dy, dx);
 
             avg_radius += radius;
             avg_angle += angle;

@@ -210,7 +210,7 @@ int main()
                 lost_frame_count = 0;
                 if (!is_kalman_init) {
                     // 如果有上一帧位置，可以估计初始速度
-                    const float dt = 0.2f;  // 与构造函数中的 dt 一致
+                    const float dt = 0.022f;  // 与构造函数中的 dt 一致
                     if (last_armor_center.x > 0) {
                         Point2f init_velocity = (armorCenter - last_armor_center) / dt;
                         armor_kalman.initWithVelocity(armorCenter, init_velocity);

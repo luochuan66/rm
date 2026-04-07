@@ -157,7 +157,7 @@ public:
                 if (spacing_error_ratio > max_spacing_error) continue;
 
                
-                if (angleGap_ > 30 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||
+                if (angleGap_ > 30 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||//30度
                     yGap_ratio > 3.0 || xGap_ratio > 4.0 || xGap_ratio < 0.5 ||
                     ratio > 3.5 || ratio < 1.5) continue;
                 float score = 0;
