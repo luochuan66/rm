@@ -15,19 +15,16 @@ const float TRANSMISSION_DELAY = 0.005f; // 串口传输延迟 (5ms)
 const float MECHANICAL_DELAY = 0.050f;  // 机械响应延迟 (50ms)
 const float TOTAL_DELAY = IMAGE_DELAY + PROCESS_DELAY + TRANSMISSION_DELAY + MECHANICAL_DELAY; // 总延迟约71ms
 
-// ===================== 性能优化建议 =====================
-// 1. 编译时启用优化：g++ -O3 -march=native rm3.cpp -o rm3 ...
-// 2. 如需更高帧率，考虑使用多线程分离图像采集和处理
-// 3. 使用海康相机的硬件触发模式可以进一步提高稳定性
+
 
 // ===================== 主函数 =====================
 int main()
 {
-    ArmorKalmanFilter armor_kalman(0.2f);
-    bool is_kalman_init = false;
-    Point2f kalman_center;
+    ArmorKalmanFilter armor_kalman(0.2f);//初始化卡尔曼滤波器
+    bool is_kalman_init = false;//跟踪状态
+    Point2f kalman_center;//// 卡尔曼滤波后的中心点
     Point2f last_armor_center(-1, -1);  // 记录上一帧装甲板中心
-    int lost_frame_count = 0;
+    int lost_frame_count = 0;//丢失检测机制
     const int MAX_LOST_FRAMES = 10;  // 增加最大丢失帧数
 
     // 连续性跟踪参数
@@ -52,13 +49,13 @@ int main()
 
     // 选择第一个设备
     int nIndex = 0;
-    MV_CC_DEVICE_INFO* pDeviceInfo = stDeviceList.pDeviceInfo[nIndex];
+    MV_CC_DEVICE_INFO* pDeviceInfo = stDeviceList.pDeviceInfo[nIndex];//触发模式
 
     // 创建句柄
     void* handle = NULL;
     nRet = MV_CC_CreateHandle(&handle, pDeviceInfo);
     if (nRet != MV_OK) {
-        cout << "创建相机句柄失败！" << endl;
+        cout << "创建相机句柄失败！" << endl;//句柄类似文件指针，后续所有操作都通过它进行。
         return -1;
     }
 
@@ -78,7 +75,7 @@ int main()
     // 设置像素格式为 RGB8（彩色）
     MV_CC_SetEnumValue(handle, "PixelFormat", PixelType_Gvsp_RGB8_Packed);
 
-    // 设置曝光时间（90fps 需要 ≤ 11111μs，设置为 2000μs 以获得更好效果）
+    // 设置曝光时间（90fps 需要 ≤ 11111μs，设置为 2000μs 以获得更好效果）2ms
     MV_CC_SetFloatValue(handle, "ExposureTime", 2000.0);
 
     // 设置增益（适当提高以补偿低曝光）
@@ -138,7 +135,7 @@ int main()
     for (;;) {
         // 优化：减少memset调用，只在必要时清零结构体
         // 减少超时时间以快速响应，支持高帧率
-        nRet = MV_CC_GetOneFrameTimeout(handle, pData, nDataSize, &stImageInfo, 10);
+        nRet = MV_CC_GetOneFrameTimeout(handle, pData, nDataSize, &stImageInfo, 10);//获取一帧
         if (nRet != MV_OK) {
             // 如果是缓冲区不足错误，尝试扩大缓冲区
             if (nRet == MV_E_NODATA || stImageInfo.nFrameLen > nDataSize) {
@@ -158,12 +155,12 @@ int main()
             continue;
         }
 
-        // 帧率统计
-        static int frame_counter = 0;
-        static auto fps_start_time = chrono::steady_clock::now();
+        // 帧率统计 静态变量初始化
+        static int frame_counter = 0;// 帧计数器
+        static auto fps_start_time = chrono::steady_clock::now();// 起始时间戳
         frame_counter++;
-        auto current_time = chrono::steady_clock::now();
-        auto fps_elapsed = chrono::duration_cast<chrono::milliseconds>(current_time - fps_start_time).count();
+        auto current_time = chrono::steady_clock::now();// 记录当前时刻
+        auto fps_elapsed = chrono::duration_cast<chrono::milliseconds>(current_time - fps_start_time).count();//计算时间差
         if (fps_elapsed >= 1000) {
             float fps = frame_counter * 1000.0f / fps_elapsed;
             cout << "[FPS] 当前帧率: " << fixed << setprecision(1) << fps << " fps" << endl;
@@ -172,7 +169,7 @@ int main()
         }
 
         // 转换为 OpenCV Mat（RGB格式）
-        Mat rgb(stImageInfo.nHeight, stImageInfo.nWidth, CV_8UC3, pData);
+        Mat rgb(stImageInfo.nHeight, stImageInfo.nWidth, CV_8UC3, pData);//海康相机输出RGB格式，OpenCV默认使用BGR
         Mat frame;
         cvtColor(rgb, frame, COLOR_RGB2BGR);  // 转换为BGR格式供OpenCV显示
 
@@ -191,18 +188,18 @@ int main()
         vector<LightDescriptor> lightInfos = vision.extractLights(binary);
 
         // ===================== 匹配装甲板 =====================
-        Point2f armorCenter;
-        vector<Point2f> vertices;
-        float estimated_distance = 0.0f;
-        bool armorFound = vision.matchArmor(lightInfos, armorCenter, vertices, estimated_distance,
+        Point2f armorCenter;//// 装甲板中心坐标（像素）
+        vector<Point2f> vertices;//// 装甲板四个角点（用于PnP）
+        float estimated_distance = 0.0f;//// 估计距离（米）
+        bool armorFound = vision.matchArmor(lightInfos, armorCenter, vertices, estimated_distance,//核心检测函数调用
                                             last_armor_center, kalman_center, is_kalman_init,
                                             last_valid_spacing, last_valid_distance, valid_detection_count);
 
-        if (armorFound) {
+        if (armorFound) {//// 更新检测中心
             vision.detect_center = armorCenter;
             last_armor_center = armorCenter;  // 更新上一帧位置
 
-            // 更新连续性跟踪参数
+            // 更新连续性跟踪参数 / 计算帧间位移（欧氏距离）
             last_valid_spacing = sqrt(pow(armorCenter.x - last_armor_center.x, 2) + pow(armorCenter.y - last_armor_center.y, 2));
             last_valid_distance = estimated_distance;
             valid_detection_count++;  // 增加连续检测帧数
@@ -237,7 +234,7 @@ int main()
                 }
 
                 // ===================== 延迟补偿预测（基于当前预测位置进行延迟补偿） =====================
-                Point2f delay_compensated_pos = armor_kalman.predictWithDelayCompensation(TOTAL_DELAY);
+                Point2f delay_compensated_pos = armor_kalman.predictWithDelayCompensation(TOTAL_DELAY);//延迟补偿预测
                 Point3f delay_compensated_pose = armor_kalman.predictPoseWithDelay(TOTAL_DELAY, vision.pitch, vision.yaw);
 
                 vision.prediction_confidence = armor_kalman.prediction_confidence;
@@ -245,12 +242,12 @@ int main()
                 // 发送串口 - 使用延迟补偿后的数据
                 if (serial.isOpen() && vision.distance_m > 0.5f && vision.distance_m < 10.0f) {
                     // 检测位置跳变（用于判断是否稳定）
-                    static Point2f last_send_center(-1, -1);
+                    static Point2f last_send_center(-1, -1);//稳定性判断机制
                     static int stable_frame_count = 0;
                     const int MIN_STABLE_FRAMES = 3;  // 至少稳定3帧才发送
                     const float MAX_JUMP_DISTANCE = 50.0f;  // 最大允许跳变距离
 
-                    bool is_stable = true;
+                    bool is_stable = true;//判断逻辑
                     if (last_send_center.x > 0) {
                         float jump_dist = sqrt(pow(armorCenter.x - last_send_center.x, 2) +
                                               pow(armorCenter.y - last_send_center.y, 2));
@@ -265,8 +262,8 @@ int main()
                     }
 
                     // 只有稳定帧或卡尔曼置信度高时才发送
-                    if (stable_frame_count >= MIN_STABLE_FRAMES || armor_kalman.prediction_confidence > 0.7f) {
-                        serial.sendVisionData(delay_compensated_pose.y,
+                    if (stable_frame_count >= MIN_STABLE_FRAMES || armor_kalman.prediction_confidence > 0.7f) {//发送条件判断（双重标准）
+                        serial.sendVisionData(delay_compensated_pose.y,//数据发送
                                               vision.pitch + delay_compensated_pose.x * 0.3f,
                                               vision.distance_m,
                                               lost_frame_count == 0 && armor_kalman.prediction_confidence > 0.6f);
@@ -305,14 +302,14 @@ int main()
             lost_frame_count++;
             valid_detection_count = 0;  // 重置连续检测帧数
 
-            if (lost_frame_count > MAX_LOST_FRAMES) {
+            if (lost_frame_count > MAX_LOST_FRAMES) {//超时重置机制
                 is_kalman_init = false;
                 last_armor_center = Point2f(-1, -1);  // 重置上一帧位置
                 last_valid_spacing = 0.0f;  // 重置有效间距
                 last_valid_distance = 0.0f;  // 重置有效距离
                 armor_kalman.reset();
                 kalman_center = Point2f(-100, -100);
-            } else if (is_kalman_init) {
+            } else if (is_kalman_init) {//预测跟踪模式
                 // 丢失帧时仅预测，不更新
                 bool is_spinning = armor_kalman.detectSpinning(kalman_center);
                 if (is_spinning) {
@@ -320,7 +317,7 @@ int main()
                 } else {
                     kalman_center = armor_kalman.predict();
                 }
-                // 限制在图像范围内
+                // 限制在图像范围内//边界限制
                 kalman_center.x = max(0.0f, min(kalman_center.x, (float)frame.cols));
                 kalman_center.y = max(0.0f, min(kalman_center.y, (float)frame.rows));
             }

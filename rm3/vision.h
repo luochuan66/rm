@@ -23,7 +23,7 @@ public:
 
 public:
     VisionProcessor() : is_detected(false) {
-        element_small = getStructuringElement(MORPH_RECT, Size(3, 3));
+        element_small = getStructuringElement(MORPH_RECT, Size(3, 3));//核
         element_medium = getStructuringElement(MORPH_RECT, Size(5, 5));
         element_large = getStructuringElement(MORPH_RECT, Size(9, 9));
         element_huge = getStructuringElement(MORPH_RECT, Size(15, 15));
@@ -72,7 +72,7 @@ public:
 
         for (int i = 0; i < contours.size(); i++) {
             double area = contourArea(contours[i]);
-            if (area < 80 || contours[i].size() <= 10) continue;
+            if (area < 80 || contours[i].size() <= 10) continue;//面积加轮廓点数
 
             RotatedRect Light_Rec = fitEllipse(contours[i]);
 
@@ -83,7 +83,7 @@ public:
             if (aspect_ratio < 2.5 || aspect_ratio > 6.5) continue;
 
             // 针对中距离优化：面积过滤更宽松
-            if (Light_Rec.size.area() < 50) continue;
+            if (Light_Rec.size.area() < 60) continue;
 
             lightInfos.push_back(LightDescriptor(Light_Rec));
         }
@@ -92,37 +92,37 @@ public:
     }
 
     // ===================== 匹配装甲板 =====================
-    bool matchArmor(const vector<LightDescriptor>& lightInfos,
-                   Point2f& armorCenter,
-                   vector<Point2f>& vertices,
-                   float& estimated_distance,
-                   const Point2f& last_armor_center,
-                   const Point2f& kalman_center,
-                   bool is_kalman_init,
-                   float last_valid_spacing,
-                   float last_valid_distance,
-                   int valid_detection_count) {
+    bool matchArmor(const vector<LightDescriptor>& lightInfos,// 输入的灯条列表
+                   Point2f& armorCenter, // 输出：装甲板中心
+                   vector<Point2f>& vertices,// 输出：四个角点
+                   float& estimated_distance,// 输出：估计距离
+                   const Point2f& last_armor_center,// 上一帧中心（跟踪用）
+                   const Point2f& kalman_center,// 卡尔曼预测中心
+                   bool is_kalman_init,// 卡尔曼是否初始化
+                   float last_valid_spacing,// 上一帧有效间距
+                   float last_valid_distance,// 上一帧有效距离
+                   int valid_detection_count) {// 连续检测帧数
 
-        const int MIN_VALID_FRAMES_FOR_TRACKING = 5;
+        const int MIN_VALID_FRAMES_FOR_TRACKING = 5;//跟踪稳定性阈值帧
 
-        vector<bool> lightUsed(lightInfos.size(), false);
-        bool armorFound = false;
-        Point2f bestArmorCenter;
-        float bestArmorScore = -1;
-        int bestLightI = -1, bestLightJ = -1;
+        vector<bool> lightUsed(lightInfos.size(), false);//灯条使用标记
+        bool armorFound = false;// // 是否找到装甲板
+        Point2f bestArmorCenter;// 最佳装甲板中心
+        float bestArmorScore = -1;// 最佳匹配得分
+        int bestLightI = -1, bestLightJ = -1;// 最佳匹配的灯条索引
 
-        for (size_t i = 0; i < lightInfos.size(); i++) {
+        for (size_t i = 0; i < lightInfos.size(); i++) {//双重循环遍历所有灯条对
             for (size_t j = i + 1; j < lightInfos.size(); j++) {
-                const LightDescriptor& leftLight = lightInfos[i];
+                const LightDescriptor& leftLight = lightInfos[i];//获取灯条对
                 const LightDescriptor& rightLight = lightInfos[j];
-                float angleGap_ = abs(leftLight.angle - rightLight.angle);
-                float LenGap_ratio = abs(leftLight.length - rightLight.length) / max(leftLight.length, rightLight.length);
-                float dis = sqrt(pow(leftLight.center.x - rightLight.center.x, 2) + pow(leftLight.center.y - rightLight.center.y, 2));
-                float meanLen = (leftLight.length + rightLight.length) / 2;
-                float lengap_ratio = abs(leftLight.length - rightLight.length) / meanLen;
-                float yGap_ratio = abs(leftLight.center.y - rightLight.center.y) / meanLen;
-                float xGap_ratio = abs(leftLight.center.x - rightLight.center.x) / meanLen;
-                float ratio = dis / meanLen;
+                float angleGap_ = abs(leftLight.angle - rightLight.angle);//角度差计算
+                float LenGap_ratio = abs(leftLight.length - rightLight.length) / max(leftLight.length, rightLight.length);//长度差异比（第一种）
+                float dis = sqrt(pow(leftLight.center.x - rightLight.center.x, 2) + pow(leftLight.center.y - rightLight.center.y, 2));//灯条中心距离
+                float meanLen = (leftLight.length + rightLight.length) / 2;//平均长度
+                float lengap_ratio = abs(leftLight.length - rightLight.length) / meanLen;//长度差异比
+                float yGap_ratio = abs(leftLight.center.y - rightLight.center.y) / meanLen;///Y方向差异比
+                float xGap_ratio = abs(leftLight.center.x - rightLight.center.x) / meanLen;//x
+                float ratio = dis / meanLen;//距离长度比
 
                 // ===================== 基于物理约束的灯条间距过滤（10cm） =====================
                 // 根据灯条长度反推距离，判断灯条间距是否符合物理约束
@@ -136,7 +136,7 @@ public:
                 // 根据连续性跟踪调整间距误差容忍度
                 float max_spacing_error;
                 bool use_tracking_bonus = (valid_detection_count >= MIN_VALID_FRAMES_FOR_TRACKING) &&
-                                         (last_valid_spacing > 0);
+                                         (last_valid_spacing > 0);//跟踪奖励判断
 
                 // 针对主要识别距离 2.2m 优化
                 if (estimated_dist > 2500.0f) {
@@ -156,63 +156,14 @@ public:
                 // 关键过滤：灯条间距必须符合物理约束
                 if (spacing_error_ratio > max_spacing_error) continue;
 
-                // ===================== 评分系统总览 =====================
-                //
-                // 【评分项目及权重】
-                // ┌─────────────────────────────────────────────────────────────────────────┐
-                // │ 评分项                  │ 分数范围 │ 说明                                │
-                // ├─────────────────────────────────────────────────────────────────────────┤
-                // │ 1. 角度差评分          │ 0-25     │ 两灯条角度差，0°满分               │
-                // │ 2. 长度一致性评分      │ 0-25     │ 两灯条长度一致性                    │
-                // │ 3. 间距/长度比评分     │ 0-25     │ 灯条排列密度，1.5满分【距离评分1】  │
-                // │ 4. Y轴间距评分         │ 0-25     │ Y轴对齐程度                         │
-                // │ 5. 间距稳定性评分      │ 0-20     │ 与上一帧间距一致性【距离评分2】      │
-                // │ 6. 距离稳定性评分      │ 0-10     │ 估算距离稳定性【距离评分3】        │
-                // │ 7. 位置距离评分        │ 0-25/15  │ 与预测位置距离【距离评分4】        │
-                // ├─────────────────────────────────────────────────────────────────────────┤
-                // │ 总分（无跟踪）         │ 0-100    │ 1+2+3+4+7(15分)                    │
-                // │ 总分（有跟踪）         │ 0-130    │ 1+2+3+4+5+6+7(25分)                │
-                // └─────────────────────────────────────────────────────────────────────────┘
-                //
-                // 【调整评分权重的建议】
-                // - 提高距离评分权重：增大评分5、6、7的分数系数
-                // - 降低其他评分权重：减小评分1、2、3、4的分数系数
-                // - 例如：将评分5从20改为30，评分7从25改为35
-                //
-                // 【距离相关评分】
-                // - 评分3：ratio = dis/meanLen，反映灯条排列密度
-                // - 评分5：spacing_change = |dis - last_valid_spacing| / last_valid_spacing
-                // - 评分6：distance_change = |estimated_dist - last_valid_distance| / last_valid_distance
-                // - 评分7：distToKalman = 装甲板中心到预测位置的距离
-                //
-                // 放宽几何特征约束，提高识别稳定性
+               
                 if (angleGap_ > 30 || LenGap_ratio > 2.0 || lengap_ratio > 1.5 ||
                     yGap_ratio > 3.0 || xGap_ratio > 4.0 || xGap_ratio < 0.5 ||
                     ratio > 3.5 || ratio < 1.5) continue;
-
-                // ===================== 评分系统 =====================
-                // 总分范围：0-130分（有跟踪时）或 0-100分（无跟踪时）
                 float score = 0;
-
-                // 【评分1】角度差评分：0-25分
-                // 角度差越小得分越高，0°时满分25分，40°时0分
-                // 权重系数：25分
                 score += (20 - angleGap_) / 20 * 25;  // 扩大角度容忍范围
-
-                // 【评分2】长度一致性评分：0-25分
-                // 两灯条长度完全一致时满分25分，长度差为meanLen时0分
-                // 权重系数：25分
-                score += (1 - lengap_ratio) * 25;
-
-                // 【评分3】间距/长度比评分：0-25分（距离评分1）
-                // ratio=1.5时满分25分（理想值），ratio=0或3时0分
-                // 权重系数：25分
-                // ratio反映了灯条排列密度，1.25为物理理论值（100mm间距/80mm长度）
-                score += (1 - abs(ratio - 1.5)) * 25;
-
-                // 【评分4】Y轴间距评分：0-25分
-                // Y轴间距为0时满分25分，间距为2*meanLen时0分
-                // 权重系数：25分
+                score += (1 - lengap_ratio) * 25;//长度一值
+                score += (1 - abs(ratio - 1.5)) * 25;//长宽比
                 score += (2.0 - yGap_ratio) / 2.0 * 25;  // 扩大Y轴差距容忍范围
 
                 // ===================== 连续性跟踪加分 =====================
@@ -220,20 +171,9 @@ public:
                 if (use_tracking_bonus && last_valid_spacing > 0) {
                     float spacing_change = abs(dis - last_valid_spacing) / last_valid_spacing;
                     float distance_change = abs(estimated_dist - last_valid_distance) / last_valid_distance;
-
-                    // 【评分5】间距稳定性评分：0-20分（距离评分2）
-                    // 与上一帧间距完全一致时满分20分，间距变化100%时0分
-                    // 权重系数：20分
                     score += max(0.0f, 1.0f - spacing_change) * 20;  // 间距稳定性
-
-                    // 【评分6】距离稳定性评分：0-10分（距离评分3）
-                    // 与上一帧距离完全一致时满分10分，距离变化100%时0分
-                    // 权重系数：10分
                     score += max(0.0f, 1.0f - distance_change) * 10;  // 距离稳定性
                 }
-
-                // ===================== 位置距离评分 =====================
-                // 添加上一帧位置权重，根据连续性调整权重
                 float position_weight = use_tracking_bonus ? 25 : 15;  // 有跟踪时增加权重：15-25分
                 float position_range = use_tracking_bonus ? 200 : 150;  // 有跟踪时扩大范围：150-200px
 
@@ -260,9 +200,9 @@ public:
                 }
 
                 if (score > bestArmorScore) {
-                    bestArmorScore = score;
-                    bestArmorCenter = Point2f((leftLight.center.x + rightLight.center.x) / 2,
-                                             (leftLight.center.y + rightLight.center.y) / 2);
+                    bestArmorScore = score;// 更新最高分
+                    bestArmorCenter = Point2f((leftLight.center.x + rightLight.center.x) / 2, // 计算装甲板中心 x
+                                             (leftLight.center.y + rightLight.center.y) / 2);//y
                     bestLightI = i;
                     bestLightJ = j;
                     armorFound = true;
@@ -272,20 +212,20 @@ public:
 
         if (armorFound) {
             lightUsed[bestLightI] = true;
-            lightUsed[bestLightJ] = true;
+            lightUsed[bestLightJ] = true;//防止同一个灯条被重复用于多个装甲板
             armorCenter = bestArmorCenter;
 
-            const LightDescriptor& leftLight = lightInfos[bestLightI];
+            const LightDescriptor& leftLight = lightInfos[bestLightI];//获取最佳匹配的灯条
             const LightDescriptor& rightLight = lightInfos[bestLightJ];
-            float dis = sqrt(pow(leftLight.center.x - rightLight.center.x, 2) + pow(leftLight.center.y - rightLight.center.y, 2));
+            float dis = sqrt(pow(leftLight.center.x - rightLight.center.x, 2) + pow(leftLight.center.y - rightLight.center.y, 2));// 重新计算间距和平均长度
             float meanLen = (leftLight.length + rightLight.length) / 2;
 
             // 更新连续性跟踪参数
-            const float LIGHT_BAR_PHYSICAL_LENGTH = 80.0f;
+            const float LIGHT_BAR_PHYSICAL_LENGTH = 80.0f;//估计距离
             estimated_distance = (LIGHT_BAR_PHYSICAL_LENGTH * 500.0f) / meanLen;
 
-            RotatedRect rect = RotatedRect(armorCenter, Size(dis, meanLen), (leftLight.angle + rightLight.angle) / 2);
-            Point2f rect_vertices[4];
+            RotatedRect rect = RotatedRect(armorCenter, Size(dis, meanLen), (leftLight.angle + rightLight.angle) / 2);// 创建装甲板旋转矩形
+            Point2f rect_vertices[4];//获取四个角点
             rect.points(rect_vertices);
             vertices.assign(rect_vertices, rect_vertices + 4);
         }
@@ -299,14 +239,14 @@ public:
         if (!solveArmorPnP(vertices, rvec, tvec)) {
             return false;
         }
-
+// 提取距离（Z轴平移）
         float distance = (float)tvec.at<double>(2);
         distance_m = distance / 1000.0f;
-        Vec3f euler = rvecToEuler(rvec);
+        Vec3f euler = rvecToEuler(rvec);// 欧拉角转换
         pitch = euler[0];
         yaw = euler[1];
-
-        float x = tvec.at<double>(0) / 1000.0f;
+// 提取3D位置（米）
+        float x = tvec.at<double>(0) / 1000.0f;// tvec 含义（相机坐标系）
         float y = tvec.at<double>(1) / 1000.0f;
         float z = tvec.at<double>(2) / 1000.0f;
 
