@@ -17,7 +17,6 @@ struct VisionSendData
     uint8_t header;//// 帧头：0xA5
     float yaw;//// 偏航角（度）
     float pitch;/// 俯仰角（度）
-    float distance; // 距离（米）
     uint8_t shoot;// 射击标志：1=射击，0=不射击
     uint8_t checksum;// 校验和
 };
@@ -96,7 +95,7 @@ public:
     }
 
     // 发送视觉数据
-    bool sendVisionData(float yaw, float pitch, float distance, bool shoot) {//// 1. 状态检查
+    bool sendVisionData(float yaw, float pitch, bool shoot) {//// 1. 状态检查
         if (!is_opened || fd == -1) {
             return false;
         }
@@ -105,7 +104,6 @@ public:
         send_data.header = 0xA5;// 帧头
         send_data.yaw = yaw;// 偏航角
         send_data.pitch = pitch;// 俯仰角
-        send_data.distance = distance;// 距离
         send_data.shoot = shoot ? 1 : 0; // 射击标志
         send_data.checksum = checkSum((uint8_t*)&send_data, sizeof(send_data)-1);// 3. 计算校验和（排除checksum字段自身）
 

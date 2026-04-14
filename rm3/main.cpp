@@ -263,10 +263,20 @@ int main()
 
                     // 只有稳定帧或卡尔曼置信度高时才发送
                     if (stable_frame_count >= MIN_STABLE_FRAMES || armor_kalman.prediction_confidence > 0.7f) {//发送条件判断（双重标准）
+                        // 开火判断：信任度大于0.8且连续8帧识别，满足条件就开火
+                        bool should_shoot = (lost_frame_count == 0 && 
+                                           armor_kalman.prediction_confidence > 0.8f && 
+                                           valid_detection_count >= 8);
+                        
+                        // 输出开火状态信息
+                        if (should_shoot) {
+                            cout << "【开火】置信度: " << fixed << setprecision(2) << armor_kalman.prediction_confidence 
+                                 << ", 连续帧数: " << valid_detection_count << endl;
+                        }
+                        
                         serial.sendVisionData(delay_compensated_pose.y,//数据发送
                                               vision.pitch + delay_compensated_pose.x * 0.3f,
-                                              vision.distance_m,
-                                              lost_frame_count == 0 && armor_kalman.prediction_confidence > 0.6f);
+                                              should_shoot);
                         last_send_center = armorCenter;  // 更新上次发送位置
                     } else {
                         // 不稳定帧，跳过发送或发送上一次稳定的数据
@@ -283,7 +293,16 @@ int main()
                 cout << "检测中心: (" << vision.detect_center.x << ", " << vision.detect_center.y << ")" << endl;
                 cout << "距离: " << fixed << setprecision(2) << vision.distance_m << " m" << endl;
                 cout << "Yaw: " << fixed << setprecision(2) << vision.yaw << " 度" << endl;
-                cout << "预测置信度: " << fixed << setprecision(2) << vision.prediction_confidence << endl;
+                cout << "预测置信度: " << fixed << setprecision(2) << vision.prediction_confidence 
+                     << ", 连续帧数: " << valid_detection_count << endl;
+                
+                // 开火判断状态（每帧显示）
+                bool should_shoot = (lost_frame_count == 0 && 
+                                   armor_kalman.prediction_confidence > 0.8f && 
+                                   valid_detection_count >= 8);
+                cout << "开火状态: " << (should_shoot ? "开火" : "等待") 
+                     << " (置信度: " << fixed << setprecision(2) << armor_kalman.prediction_confidence 
+                     << "/0.8, 连续帧: " << valid_detection_count << "/8)" << endl;
 
                 // ===================== 绘制结果 =====================
                 vision.drawResult(frame_copy, armorCenter, vertices, kalman_center, armor_kalman);
